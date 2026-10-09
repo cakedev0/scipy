@@ -97,9 +97,20 @@ _find_interval(const double* tptr, int64_t len_t,
     if (((xval < tb) || (xval > te)) && !extrapolate) {
         return -1;
     }
-    int64_t l = (k < prev_l) && (prev_l < n) ? prev_l : k;
+    if ((prev_l < k) || (prev_l >= n)) {
+        // No hint: bisection, for the largest l in [k, n-1] with t[l] <= xval.
+        int64_t l = k, len = n - k;
+        while (len > 1) {
+            int64_t half = len / 2;
+            l = (t(l + half) <= xval) ? l + half : l;
+            len -= half;
+        }
+        return l;
+    }
 
-    // xval is in support, search for interval s.t. t[interval] <= xval < t[l+1]
+    // Linear search from the hint, which is fast when xval is close to the
+    // previous value, e.g. for sorted inputs.
+    int64_t l = prev_l;
     while ((xval < t(l)) && (l != k)) {
         l -= 1;
     }
@@ -1387,7 +1398,7 @@ norm_eq_lsq(const double *xptr, int64_t m,            // x, shape (m,)
         double wval = w(j) * w(j);
 
         // where in t is xval
-        left = _find_interval(t.data, len_t, k, xval, k, 0);
+        left = _find_interval(t.data, len_t, k, xval, left, 0);
 
         // non-zero b-splines at xval
         _deBoor_D(t.data, xval, k, left, 0, wrk);
@@ -1485,7 +1496,7 @@ _evaluate_ndbspline(const double *xi_ptr, int64_t npts, int64_t ndim,  // xi, sh
             const double *td = t.data + max_len_t*d;
 
             // get the location of x[d] in td
-            int64_t i_d = _find_interval(td, len_t(d), kd, xd, kd, i_extrap);
+            int64_t i_d = _find_interval(td, len_t(d), kd, xd, -1, i_extrap);
 
             if (i_d < 0) {
                 out_of_bounds = true;
@@ -1605,7 +1616,7 @@ _coloc_nd(/* inputs */
             const double *td = t.data + max_len_t*d;
 
             // get the location of x[d] in td
-            int64_t i_d = _find_interval(td, len_t(d), kd, xd, kd, 1);
+            int64_t i_d = _find_interval(td, len_t(d), kd, xd, -1, 1);
 
             if (i_d < 0) {
                 out_of_bounds = true;

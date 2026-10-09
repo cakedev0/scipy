@@ -114,6 +114,9 @@ _deBoor_D(const double *t, double x, int k, int ell, int m, double *result);
 
 /*
  *  Find an interval such that t[interval] <= xval < t[interval+1].
+ *
+ *  `prev_l` is a hint, e.g. the interval of the previous value: the search
+ *  starts from it if it is in [k, n), and is a bisection otherwise (e.g. -1).
  */
 int64_t
 _find_interval(const double* tptr, int64_t len_t,
