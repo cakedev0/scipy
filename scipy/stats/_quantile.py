@@ -91,14 +91,15 @@ def _quantile_iv(x, p, method, axis, nan_policy, keepdims, weights, fun='quantil
     if weights is None:
         y = xp.sort(x, axis=axis, stable=False)
         y, p = _broadcast_arrays((y, p), axis=axis)
-        n_zero_weight = None
+        n_zero_weight = i_y = None
     else:
         x, weights = xp.broadcast_arrays(x, weights)
         i_zero_weight = (weights == 0)
         n_zero_weight = xp.count_nonzero(i_zero_weight, axis=axis, keepdims=True)
-        x = xpx.at(x)[i_zero_weight].set(xp.inf, copy=True)
-        i_y = xp.argsort(x, axis=axis, stable=False)
-        y = xp.take_along_axis(x, i_y, axis=axis)
+        y = xpx.at(x)[i_zero_weight].set(xp.inf, copy=True)
+        # `y` is left unsorted: only the weights are needed in sorted order, and
+        # the selected elements of `y` are gathered through `i_y`.
+        i_y = xp.argsort(y, axis=axis, stable=False)
         weights = xp.take_along_axis(weights, i_y, axis=axis)
         y, p, weights, i_y, n_zero_weight = _broadcast_arrays(
             (y, p, weights, i_y, n_zero_weight), axis=axis)
@@ -112,6 +113,7 @@ def _quantile_iv(x, p, method, axis, nan_policy, keepdims, weights, fun='quantil
     y = xp.moveaxis(y, axis, -1)
     p = xp.moveaxis(p, axis, -1)
     weights = weights if weights is None else xp.moveaxis(weights, axis, -1)
+    i_y = i_y if i_y is None else xp.moveaxis(i_y, axis, -1)
     n_zero_weight = (n_zero_weight if n_zero_weight is None
                      else xp.moveaxis(n_zero_weight, axis, -1))
 
@@ -151,7 +153,7 @@ def _quantile_iv(x, p, method, axis, nan_policy, keepdims, weights, fun='quantil
         p = xp.where(p_mask, 0.5, p)  # these get NaN-ed out at the end
 
     return (y, p, method, axis, nan_policy, keepdims,
-            n, axis_none, ndim, p_mask, weights, xp)
+            n, axis_none, ndim, p_mask, weights, i_y, xp)
 
 
 @xp_capabilities(skip_backends=[("dask.array", "No take_along_axis yet.")],
@@ -392,12 +394,12 @@ def quantile(x, p, *, method='linear', axis=0, nan_policy='propagate', keepdims=
 
     temp = _quantile_iv(x, p, method, axis, nan_policy, keepdims, weights)
     (y, p, method, axis, nan_policy, keepdims,
-     n, axis_none, ndim, p_mask, weights, xp) = temp
+     n, axis_none, ndim, p_mask, weights, i_y, xp) = temp
 
     if method in {'inverted_cdf', 'averaged_inverted_cdf', 'closest_observation',
                   'hazen', 'interpolated_inverted_cdf', 'linear',
                   'median_unbiased', 'normal_unbiased', 'weibull'}:
-        res = _quantile_hf(y, p, n, method, weights, xp)
+        res = _quantile_hf(y, p, n, method, weights, i_y, xp)
     elif method in {'harrell-davis'}:
         res = _quantile_hd(y, p, n, xp)
     elif method in {'_lower', '_midpoint', '_higher', '_nearest'}:
@@ -425,7 +427,7 @@ def _post_quantile(res, p_mask, axis, axis_none, ndim, keepdims, xp):
     return res[()] if res.ndim == 0 else res
 
 
-def _quantile_hf(y, p, n, method, weights, xp):
+def _quantile_hf(y, p, n, method, weights, i_y, xp):
     ms = dict(inverted_cdf=0, averaged_inverted_cdf=0, closest_observation=-0.5,
               interpolated_inverted_cdf=0, hazen=0.5, weibull=p, linear=1 - p,
               median_unbiased=p/3 + 1/3, normal_unbiased=p/4 + 3/8)
@@ -441,9 +443,11 @@ def _quantile_hf(y, p, n, method, weights, xp):
         n_int = xp.broadcast_to(n_int, cumulative_weights.shape[:-1] + (1,))
         total_weight = xp.take_along_axis(cumulative_weights, n_int-1, axis=-1)
         jg = p * total_weight + m
-        jp1 = _xp_searchsorted(cumulative_weights, jg, side='right')
-        j = _xp_searchsorted(cumulative_weights, jg-1, side='right')
-        j, jp1 = xp.astype(j, y.dtype), xp.astype(jp1, y.dtype)
+        # search for `jg` and `jg - 1` at once
+        k = jg.shape[-1]
+        jj = _xp_searchsorted(cumulative_weights, xp.concat((jg, jg - 1), axis=-1),
+                              side='right', xp=xp)
+        jp1, j = xp.astype(jj[..., :k], y.dtype), xp.astype(jj[..., k:], y.dtype)
 
     g = jg % 1
     if method == 'inverted_cdf':
@@ -460,9 +464,14 @@ def _quantile_hf(y, p, n, method, weights, xp):
     zero = xp.zeros_like(j)
     j = xp.clip(j, zero, xp.maximum(n - 1, zero))
     jp1 = xp.clip(jp1, zero, xp.maximum(n - 1, zero))
+    j, jp1 = xp.astype(j, xp.int64), xp.astype(jp1, xp.int64)
 
-    return ((1 - g) * xp.take_along_axis(y, xp.astype(j, xp.int64), axis=-1)
-            + g * xp.take_along_axis(y, xp.astype(jp1, xp.int64), axis=-1))
+    if i_y is not None:  # `y` is unsorted
+        j = xp.take_along_axis(i_y, j, axis=-1)
+        jp1 = xp.take_along_axis(i_y, jp1, axis=-1)
+
+    return ((1 - g) * xp.take_along_axis(y, j, axis=-1)
+            + g * xp.take_along_axis(y, jp1, axis=-1))
 
 
 def _quantile_hd(y, p, n, xp):
@@ -757,7 +766,8 @@ def estimated_cdf(x, y, *, method='linear',
     """
     temp = _quantile_iv(x, y, method, axis, nan_policy, keepdims, weights=None,
                         fun='estimated_cdf')
-    x, y, method, axis, nan_policy, keepdims, n, axis_none, ndim, y_mask, _, xp = temp
+    (x, y, method, axis, nan_policy, keepdims,
+     n, axis_none, ndim, y_mask, _, _, xp) = temp
 
     if xp_size(x) == 0:
         res = xp.full_like(y, xp.nan)
