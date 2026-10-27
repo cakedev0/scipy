@@ -401,7 +401,8 @@ class Test_XPSearchsorted:
     @pytest.mark.parametrize('side', ['left', 'right'])
     @pytest.mark.parametrize('ties', [False, True])
     @pytest.mark.parametrize('shape', [0, 1, 2, 10, 11, 1000, 10001,
-                                       (2, 0), (0, 2), (2, 10), (2, 3, 11)])
+                                       (2, 0), (0, 2), (2, 10), (2, 3, 11),
+                                       (3, 1001)])
     @pytest.mark.parametrize('nans_x', [False, True])
     @pytest.mark.parametrize('infs_x', [False, True])
     def test_nd(self, side, ties, shape, nans_x, infs_x, xp):

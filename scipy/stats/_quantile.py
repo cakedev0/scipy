@@ -9,6 +9,7 @@ from scipy._lib._array_api import (
     xp_device,
     xp_size,
     _count_nonmasked,
+    is_numpy,
     is_torch,
     is_lazy_array,
 )
@@ -523,6 +524,15 @@ def _xp_searchsorted(x, y, *, side='left', xp=None):
         y = xp.reshape(y, ()) if (y_0d and x_1d) else y
         out = xp.searchsorted(x, y, side=side)
         out = xp.astype(out, default_int, copy=False)
+        return out
+
+    n_x, n_y = x.shape[-1], y.shape[-1]
+    if is_numpy(xp) and n_x + 8 * n_y * math.log2(n_x + 1) > 1000:
+        # A loop of compiled searches costs ~1 us per row, but avoids the ~log2(n_x)
+        # gathers and the full passes over `x` of the bisection below.
+        out = xp.empty(y.shape, dtype=default_int)
+        for i in np.ndindex(y.shape[:-1]):
+            out[i] = np.searchsorted(x[i], y[i], side=side)
         return out
 
     a = xp.full(y.shape, 0, device=xp_device(x))
